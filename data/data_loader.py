@@ -1,4 +1,4 @@
-# data/data_loader.py
+
 import csv
 import glob
 import re
@@ -9,48 +9,72 @@ import pandas as pd
 COLS = ["news_context", "label", "category", "source_type",
         "news_id", "generated_at", "meta_intent", "meta_style"]
 
+ID_PATTERN = re.compile(r"NP_\d+")
+
 
 # STEP 1: find the files
 def find_files(pattern="datasets/nepali_news_part_*.csv"):
     return sorted(glob.glob(pattern))
 
 
-# STEP 2 (diagnostic only): which rows does the csv module consider broken?
+# STEP 2 (diagnostic only): which records does the plain csv module see as broken?
 def report_broken_rows(path):
     broken = []
-    with open(path, mode="r", encoding="utf-8", errors="ignore") as f:
+    with open(path, mode="r", encoding="utf-8", errors="ignore", newline="") as f:
         for idx, row in enumerate(csv.reader(f), start=1):
             if len(row) != 8:
                 broken.append((idx, len(row)))
     return broken
 
 
-# STEP 3: parse ONE line. Returns (row, None) on success or (None, reason) on failure.
-def parse_line(line):
-    parts = line.rsplit(",", 7)           # split from the right; the last 7 columns are fixed
-    if len(parts) != 8:
-        return None, "too few fields"
+# STEP 3: parse ONE record (a list of fields from csv.reader).
+# Returns (row, None) on success or (None, reason) on failure.
+def parse_record(rec):
+    rec = list(rec)
+    n = len(rec)
 
-    text = parts[0].strip().strip('"').replace('""', '"')
-    label, cat, src, nid, ts, intent, style = parts[1:]
+    def is_id(s):
+        return bool(ID_PATTERN.fullmatch(s.strip()))
 
-    if label not in ("0", "1") or not re.fullmatch(r"NP_\d+", nid):
+    # layout A: text, label, category, id, timestamp
+    if n == 5 and is_id(rec[3]):
+        text, label, cat, nid, ts = rec
+        src = intent = style = None
+
+    # layout B: text, label, category, source_type, id, timestamp [, intent [, style [, junk...]]]
+    elif n >= 6 and is_id(rec[4]):
+        text, label, cat, src, nid, ts = rec[:6]
+        intent = rec[6] if n > 6 else None
+        style = rec[7] if n > 7 else None
+
+    # layout C: unquoted commas inside the text, last 7 columns are fixed
+    elif n > 8 and is_id(rec[-6]):
+        text = ",".join(rec[:n - 7])
+        label, cat, src, nid, ts, intent, style = rec[-7:]
+
+    else:
+        return None, "too few fields" if n < 5 else "unrecognized layout"
+
+    if label not in ("0", "1"):
         return None, "bad label/id"
-    if re.search(r"NP_\d+", text):        # an ID inside the text means two records were glued together
+    if ID_PATTERN.search(text):            # a second ID inside the text means glued records
         return None, "glued records"
 
-    return [text, int(label), cat, src, nid, ts, intent, style], None
+    # store empty strings as None so missing values are consistent
+    return [text.strip(), int(label), cat or None, src or None,
+            nid, ts, intent or None, style or None], None
 
 
-# STEP 4: parse ONE file using parse_line
+# STEP 4: parse ONE file
 def load_file(path):
     rows, bad = [], []
-    with open(path, encoding="utf-8", newline="") as f:
-        f.readline()                      # skip header
-        for n, line in enumerate(f, start=2):
-            row, reason = parse_line(line.rstrip("\r\n"))
+    with open(path, encoding="utf-8", newline="") as f:   # newline="" is required for multi-line fields
+        reader = csv.reader(f)
+        next(reader)                                       # skip header
+        for rec_no, rec in enumerate(reader, start=2):
+            row, reason = parse_record(rec)
             if row is None:
-                bad.append((n, reason, line))
+                bad.append((rec_no, reason, rec))
             else:
                 rows.append(row)
     return pd.DataFrame(rows, columns=COLS), bad
@@ -63,11 +87,20 @@ def load_all(pattern="datasets/nepali_news_part_*.csv"):
         df, bad = load_file(path)
         df["file"] = path
         frames.append(df)
-        all_bad += [(path, n, reason, line) for n, reason, line in bad]
+        all_bad += [(path, n, reason, rec) for n, reason, rec in bad]
     return pd.concat(frames, ignore_index=True), all_bad
 
 
 # STEP 6: summarize what was dropped
-def summarize_bad(all_bad, total_rows):
-    print(f"Dropped {len(all_bad)} lines out of {total_rows + len(all_bad)}")
-    print(Counter(reason for _, _, reason, _ in all_bad))
+def summarize_bad(all_bad, total_kept):
+    total = total_kept + len(all_bad)
+    print(f"Dropped {len(all_bad)} records out of {total} ({len(all_bad) / total:.1%})")
+    print("By reason:", Counter(reason for _, _, reason, _ in all_bad))
+    print("By file:  ", Counter(path for path, _, _, _ in all_bad))
+    print("By field count:", Counter(len(rec) for _, _, _, rec in all_bad))
+
+
+# STEP 7: look at a few dropped records of one kind
+def show_bad(all_bad, reason, n=5):
+    for path, rec_no, r, rec in [b for b in all_bad if b[2] == reason][:n]:
+        print(path, rec_no, repr(rec)[:300])
