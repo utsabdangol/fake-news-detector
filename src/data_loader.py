@@ -1,8 +1,8 @@
-
+# src/data_loader.py
 import csv
-import glob
 import re
 from collections import Counter
+from pathlib import Path
 
 import pandas as pd
 
@@ -11,13 +11,19 @@ COLS = ["news_context", "label", "category", "source_type",
 
 ID_PATTERN = re.compile(r"NP_\d+")
 
+# project_root/data  (works no matter which folder you run the script from)
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+
 
 # STEP 1: find the files
-def find_files(pattern="datasets/nepali_news_part_*.csv"):
-    return sorted(glob.glob(pattern))
+def find_files(pattern="nepali_news_part_*.csv"):
+    files = sorted(str(p) for p in DATA_DIR.rglob(pattern))
+    if not files:
+        raise FileNotFoundError(f"No files matching {pattern} under {DATA_DIR}")
+    return files
 
 
-# STEP 2 (diagnostic only): which records does the plain csv module see as broken?
+# STEP 2 (diagnostic only): which records does the plain csv module see as not 8 fields?
 def report_broken_rows(path):
     broken = []
     with open(path, mode="r", encoding="utf-8", errors="ignore", newline="") as f:
@@ -27,7 +33,7 @@ def report_broken_rows(path):
     return broken
 
 
-# STEP 3: parse ONE record (a list of fields from csv.reader).
+# STEP 3: parse ONE record (a list of fields from csv.reader)
 # Returns (row, None) on success or (None, reason) on failure.
 def parse_record(rec):
     rec = list(rec)
@@ -47,7 +53,7 @@ def parse_record(rec):
         intent = rec[6] if n > 6 else None
         style = rec[7] if n > 7 else None
 
-    # layout C: unquoted commas inside the text, last 7 columns are fixed
+    # layout C: unquoted commas inside the text; the last 7 columns are fixed
     elif n > 8 and is_id(rec[-6]):
         text = ",".join(rec[:n - 7])
         label, cat, src, nid, ts, intent, style = rec[-7:]
@@ -57,7 +63,7 @@ def parse_record(rec):
 
     if label not in ("0", "1"):
         return None, "bad label/id"
-    if ID_PATTERN.search(text):            # a second ID inside the text means glued records
+    if ID_PATTERN.search(text):          # a second ID inside the text means glued records
         return None, "glued records"
 
     # store empty strings as None so missing values are consistent
@@ -68,7 +74,7 @@ def parse_record(rec):
 # STEP 4: parse ONE file
 def load_file(path):
     rows, bad = [], []
-    with open(path, encoding="utf-8", newline="") as f:   # newline="" is required for multi-line fields
+    with open(path, encoding="utf-8", newline="") as f:    # newline="" is required for multi-line fields
         reader = csv.reader(f)
         next(reader)                                       # skip header
         for rec_no, rec in enumerate(reader, start=2):
@@ -81,7 +87,7 @@ def load_file(path):
 
 
 # STEP 5: parse ALL files and combine
-def load_all(pattern="datasets/nepali_news_part_*.csv"):
+def load_all(pattern="nepali_news_part_*.csv"):
     frames, all_bad = [], []
     for path in find_files(pattern):
         df, bad = load_file(path)
@@ -104,3 +110,11 @@ def summarize_bad(all_bad, total_kept):
 def show_bad(all_bad, reason, n=5):
     for path, rec_no, r, rec in [b for b in all_bad if b[2] == reason][:n]:
         print(path, rec_no, repr(rec)[:300])
+
+
+if __name__ == "__main__":
+    import sys
+    sys.stdout.reconfigure(encoding="utf-8")
+    df, bad = load_all()
+    print(df.shape)
+    summarize_bad(bad, len(df))
