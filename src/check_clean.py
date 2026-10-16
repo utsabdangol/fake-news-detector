@@ -1,4 +1,4 @@
-# src/check_clean.py
+
 import sys
 sys.stdout.reconfigure(encoding="utf-8")
 
