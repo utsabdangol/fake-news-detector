@@ -1,6 +1,8 @@
+
 import re
 
-#  top words per class again
+MODES = ("raw", "stem", "both")
+
 STOPWORDS = {
     "र", "को", "मा", "छ", "यो", "कि", "ले", "लाई", "पनि", "हो", "थियो",
     "गरेको", "गर्ने", "गरे", "गरियो", "भएको", "भने", "तर", "यस", "यसको",
@@ -13,7 +15,16 @@ SPELLING = {
     "काठमाण्डौं": "काठमाडौं",
     "काठमाडौँ": "काठमाडौं",
     "निपाल": "नेपाल",
+    "दावी": "दाबी",
+    "दावीको": "दाबीको",
 }
+
+# case endings that Nepali glues onto words; longest first so "हरूलाई" wins over "लाई"
+SUFFIXES = sorted(
+    ["हरूलाई", "हरूको", "हरूले", "हरूमा", "हरू",
+     "लाई", "बाट", "देखि", "सँग", "को", "का", "की", "मा", "ले"],
+    key=len, reverse=True,
+)
 
 DATELINE = re.compile(r"(काठमाण्डौं?|काठमाडौँ|काठमाडौं)\s*[–\-]\s*")
 
@@ -34,17 +45,39 @@ def clean(text, strip_dateline=False, normalize_spelling=True):
     return text
 
 
-def tokenize(text, remove_stopwords=True):
-    tokens = text.split()
-    tokens = [t for t in tokens if len(t) > 1 or t == "<num>"]
+def strip_suffix(word, min_stem=3):
+    if word == "<num>":
+        return word
+    for s in SUFFIXES:
+        if word.endswith(s) and len(word) - len(s) >= min_stem:
+            return word[:-len(s)]
+    return word
+
+
+def tokenize(text, remove_stopwords=True, mode="raw"):
+    """
+    mode = "raw"  : words exactly as written            (दाबीको)
+    mode = "stem" : endings stripped                    (दाबी)
+    mode = "both" : the word, plus its stem if it differs (दाबीको, दाबी)
+    """
+    if mode not in MODES:
+        raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
+
+    tokens = [t for t in text.split() if len(t) > 1 or t == "<num>"]
     if remove_stopwords:
-        tokens = [t for t in tokens if t not in STOPWORDS]
-    return tokens
+        tokens = [t for t in tokens if t not in STOPWORDS]      # stopwords first, on the full word
+
+    if mode == "raw":
+        return tokens
+    stems = [strip_suffix(t) for t in tokens]
+    if mode == "stem":
+        return stems
+    return tokens + [s for s, t in zip(stems, tokens) if s != t]   # "both"
 
 
-def preprocess(text, **kwargs):
-    strip_dateline = kwargs.pop("strip_dateline", False)
-    return tokenize(clean(text, strip_dateline=strip_dateline), **kwargs)
+def preprocess(text, mode="raw", strip_dateline=False, remove_stopwords=True):
+    return tokenize(clean(text, strip_dateline=strip_dateline),
+                    remove_stopwords=remove_stopwords, mode=mode)
 
 
 # ---------- dataset level (training only, never at prediction time) ----------
